@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        video {
+            width: 100%;
+            max-width: 800px;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        select {
+            padding: 8px;
+            margin-right: 10px;
+        }
+        #debug {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Video Player</h1>
+    <video id="video" controls></video>
+    <div class="controls">
+        <select id="videoSelect">
+            <option value="">Select a video</option>
+        </select>
+    </div>
+    <div id="debug"></div>
+
+    <script>
+        const video = document.getElementById('video');
+        const videoSelect = document.getElementById('videoSelect');
+        const debug = document.getElementById('debug');
+        
+        let currentHls = null;  // 保存当前的HLS实例
+
+        function log(message) {
+            debug.textContent += message + '\n';
+            console.log(message);
+        }
+
+        // 清理当前的HLS实例
+        function cleanupHls() {
+            if (currentHls) {
+                log('Cleaning up previous HLS instance');
+                currentHls.destroy();
+                currentHls = null;
+            }
+            video.src = '';  // 清除视频源
+        }
+
+        // 获取视频列表
+        async function loadVideos() {
+            try {
+                log('Loading video list...');
+                const response = await fetch('/videos');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const text = await response.text();
+                log('Received video list HTML');
+                const parser = new DOMParser();
+                const html = parser.parseFromString(text, 'text/html');
+                const links = html.querySelectorAll('a');
+                
+                // 清空现有的选项（除了第一个）
+                while (videoSelect.options.length > 1) {
+                    videoSelect.remove(1);
+                }
+                
+                log(`Found ${links.length} links`);
+                links.forEach(link => {
+                    if (link.href.endsWith('.mp4')) {
+                        const option = document.createElement('option');
+                        option.value = link.href;
+                        option.textContent = link.textContent;
+                        videoSelect.appendChild(option);
+                        log(`Added video option: ${link.textContent}`);
+                    }
+                });
+            } catch (error) {
+                log(`Error loading videos: ${error}`);
+            }
+        }
+
+        // 播放选中的视频
+        videoSelect.addEventListener('change', () => {
+            const videoUrl = videoSelect.value;
+            if (videoUrl) {
+                cleanupHls();  // 清理之前的HLS实例
+                
+                const hlsUrl = videoUrl.replace('.mp4', '/index.m3u8');
+                log(`Selected video: ${videoUrl}`);
+                log(`HLS URL: ${hlsUrl}`);
+
+                if (Hls.isSupported()) {
+                    log('HLS.js is supported');
+                    currentHls = new Hls({
+                        debug: true,
+                        enableWorker: true
+                    });
+                    
+                    currentHls.on(Hls.Events.ERROR, (event, data) => {
+                        log(`HLS Error: ${data.type} - ${data.details}`);
+                        if (data.fatal) {
+                            switch(data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    log('Fatal network error, trying to recover...');
+                                    currentHls.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    log('Fatal media error, trying to recover...');
+                                    currentHls.recoverMediaError();
+                                    break;
+                                default:
+                                    log('Fatal error, cannot recover');
+                                    cleanupHls();
+                                    break;
+                            }
+                        }
+                    });
+
+                    currentHls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        log('Manifest parsed, starting playback');
+                        video.play().catch(e => log(`Play error: ${e}`));
+                    });
+
+                    log('Loading HLS source...');
+                    currentHls.loadSource(hlsUrl);
+                    currentHls.attachMedia(video);
+                } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    log('Native HLS support detected');
+                    video.src = hlsUrl;
+                    video.addEventListener('loadedmetadata', () => {
+                        log('Metadata loaded, starting playback');
+                        video.play().catch(e => log(`Play error: ${e}`));
+                    });
+                } else {
+                    log('HLS not supported in this browser');
+                }
+            } else {
+                cleanupHls();  // 如果没有选择视频，清理HLS实例
+            }
+        });
+
+        // 页面加载时获取视频列表
+        loadVideos();
+    </script>
+</body>
+</html>
